@@ -181,6 +181,7 @@ impl AnalysisImpl {
         self.db.file_lines(file_id)
     }
     pub fn world_symbols(&self, query: Query) -> Cancelable<Vec<(FileId, FileSymbol)>> {
+        log::error!("start {:?}", self.db);
         let buf: Vec<Arc<SymbolIndex>> = if query.libs {
             self.db.libraries().iter()
                 .map(|&lib_id| self.db.library_symbols(lib_id))
@@ -188,13 +189,16 @@ impl AnalysisImpl {
         } else {
             let files = &self.db.source_root(WORKSPACE).files;
             let db = self.db.clone();
-            files.par_iter()
+            let res = files.par_iter()
                 .map_with(db, |db, &file_id| db.file_symbols(file_id))
                 .filter_map(|it| it.ok())
-                .collect()
+                .collect::<Vec<_>>();
+            log::error!("files, symbols = {} {}", files.len(), res.len());
+            res
         };
         self.db.query(FileSyntaxQuery)
             .sweep(salsa::SweepStrategy::default().discard_values());
+        log::error!("end {:?}", self.db);
         Ok(query.search(&buf))
     }
     fn module_tree(&self, file_id: FileId) -> Cancelable<Arc<ModuleTree>> {
