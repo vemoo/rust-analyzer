@@ -25,10 +25,16 @@ impl salsa::Database for RootDatabase {
     }
 }
 
+static CNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 pub(crate) fn check_canceled(db: &impl salsa::Database) -> Cancelable<()> {
     if db.salsa_runtime().is_current_revision_canceled() {
+        log::error!("Canceled");
         Err(Canceled)
     } else {
+        if CNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst) % 10 == 0 {
+            log::info!("Not canceled");
+        }
         Ok(())
     }
 }
@@ -93,6 +99,7 @@ fn file_lines(db: &impl SyntaxDatabase, file_id: FileId) -> Arc<LineIndex> {
 }
 fn file_symbols(db: &impl SyntaxDatabase, file_id: FileId) -> Cancelable<Arc<SymbolIndex>> {
     db::check_canceled(db)?;
+    std::thread::sleep_ms(300);
     let syntax = db.file_syntax(file_id);
     Ok(Arc::new(SymbolIndex::for_file(file_id, syntax)))
 }

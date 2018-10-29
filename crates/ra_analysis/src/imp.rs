@@ -103,9 +103,11 @@ impl AnalysisHostImpl {
         log::info!("apply_change {:?}", change);
 
         for (file_id, text) in change.files_changed {
+            log::info!("will set");
             self.db
                 .query(crate::input::FileTextQuery)
-                .set(file_id, Arc::new(text))
+                .set(file_id, Arc::new(text));
+            log::info!("has set");
         }
         if !(change.files_added.is_empty() && change.files_removed.is_empty()) {
             let file_resolver = change.file_resolver
