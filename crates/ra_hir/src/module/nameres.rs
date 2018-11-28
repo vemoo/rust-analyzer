@@ -382,6 +382,28 @@ mod tests {
     }
 
     #[test]
+    fn test_self() {
+        let (item_map, module_id) = item_map(
+            "
+            //- /lib.rs
+            mod foo;
+
+            use crate::foo::bar::Baz::{self};
+            <|>
+
+            //- /foo/mod.rs
+            pub mod bar;
+
+            //- /foo/bar.rs
+            pub struct Baz;
+        ",
+        );
+        let name = SmolStr::from("Baz");
+        let resolution = &item_map.per_module[&module_id].items[&name];
+        assert!(resolution.def_id.is_some());
+    }
+
+    #[test]
     fn typing_inside_a_function_should_not_invalidate_item_map() {
         let (mut db, pos) = MockDatabase::with_position(
             "
