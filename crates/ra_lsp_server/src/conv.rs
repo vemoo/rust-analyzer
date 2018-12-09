@@ -339,3 +339,59 @@ where
         self.iter.next().map(|item| item.conv_with(self.ctx))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::{proptest, proptest_helper};
+    use proptest::prelude::*;
+
+    fn arb_line_index_with_offset() -> BoxedStrategy<(LineIndex, TextUnit)> {
+        proptest::string::string_regex("(.*\n?)*") // generate multiple newlines
+            .unwrap()
+            .prop_flat_map(|s| {
+                let li = LineIndex::new(&s);
+                (Just(li), arb_offset(&s))
+            })
+            .boxed()
+    }
+
+    fn arb_offset(text: &str) -> BoxedStrategy<TextUnit> {
+        let end = TextUnit::of_str(text).to_usize();
+        if end == 0 {
+            Just(TextUnit::from(0)).boxed()
+        } else {
+            (0..end).prop_map(TextUnit::from_usize).boxed()
+        }
+    }
+
+    fn arb_edits() -> BoxedStrategy<Vec<AtomEdit>> {
+        let max_offset: u32 = 100;
+        let arb_edit = (0..max_offset).prop_flat_map(move |start| {
+            let range = (Just(start), start..max_offset).prop_map(|(start, end)| {
+                TextRange::from_to(TextUnit::from(start), TextUnit::from(end))
+            });
+            let delete = range.clone().prop_map(AtomEdit::delete).boxed();
+            let insert = (Just(start), prop::arbitrary::any::<String>())
+                .prop_map(|(offset, text)| AtomEdit::insert(TextUnit::from(offset), text))
+                .boxed();
+            let replace = (range, prop::arbitrary::any::<String>())
+                .prop_map(|(range, text)| AtomEdit::replace(range, text))
+                .boxed();
+            delete.prop_union(insert).or(replace)
+        });
+        prop::collection::vec(arb_edit, 0..5).boxed()
+    }
+
+    proptest! {
+        #[test]
+        fn test_translate_offset_with_edit(
+            (line_index, offset) in arb_line_index_with_offset(),
+            edits in arb_edits()
+        ) {
+            let line_col = translate_offset_with_edit(&line_index, offset, &edits);
+            println!("{:?}", line_col);
+        }
+    }
+
+}

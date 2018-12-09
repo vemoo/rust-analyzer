@@ -34,3 +34,4 @@ gen_lsp_server = { path = "../gen_lsp_server" }
 [dev-dependencies]
 tempdir = "0.3.7"
 test_utils = { path = "../test_utils" }
+proptest = "0.8.7"
