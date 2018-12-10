@@ -343,52 +343,57 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proptest::{proptest, proptest_helper};
+    use proptest::{proptest, proptest_helper, string::RegexGeneratorStrategy};
     use proptest::prelude::*;
 
-    fn arb_line_index_with_offset() -> BoxedStrategy<(LineIndex, TextUnit)> {
-        proptest::string::string_regex("(.*\n?)*") // generate multiple newlines
-            .unwrap()
+    fn arb_text() -> RegexGeneratorStrategy<std::string::String> {
+        // generate multiple newlines
+        proptest::string::string_regex("(.*\n?)*").unwrap()
+    }
+
+    fn arb_line_index_with_offset_and_edits() -> BoxedStrategy<(LineIndex, TextUnit, Vec<AtomEdit>)>
+    {
+        arb_text()
             .prop_flat_map(|s| {
-                let li = LineIndex::new(&s);
-                (Just(li), arb_offset(&s))
+                let line_index = LineIndex::new(&s);
+                let char_indices: Vec<_> = s.char_indices().map(|(i, _)| i).collect();
+                let arb_offset = arb_offset(char_indices);
+                (Just(line_index), arb_offset.clone(), arb_edits(arb_offset))
             })
             .boxed()
     }
 
-    fn arb_offset(text: &str) -> BoxedStrategy<TextUnit> {
-        let end = TextUnit::of_str(text).to_usize();
-        if end == 0 {
+    fn arb_offset(char_indices: Vec<usize>) -> BoxedStrategy<TextUnit> {
+        // this is necesary to avoid "Uniform::new called with `low >= high`" panic
+        if char_indices.is_empty() {
             Just(TextUnit::from(0)).boxed()
         } else {
-            (0..end).prop_map(TextUnit::from_usize).boxed()
+            prop::sample::select(char_indices)
+                .prop_map(TextUnit::from_usize)
+                .boxed()
         }
     }
 
-    fn arb_edits() -> BoxedStrategy<Vec<AtomEdit>> {
-        let max_offset: u32 = 100;
-        let arb_edit = (0..max_offset).prop_flat_map(move |start| {
-            let range = (Just(start), start..max_offset).prop_map(|(start, end)| {
-                TextRange::from_to(TextUnit::from(start), TextUnit::from(end))
-            });
-            let delete = range.clone().prop_map(AtomEdit::delete).boxed();
-            let insert = (Just(start), prop::arbitrary::any::<String>())
-                .prop_map(|(offset, text)| AtomEdit::insert(TextUnit::from(offset), text))
-                .boxed();
-            let replace = (range, prop::arbitrary::any::<String>())
-                .prop_map(|(range, text)| AtomEdit::replace(range, text))
-                .boxed();
-            delete.prop_union(insert).or(replace)
+    fn arb_edits(offsets: BoxedStrategy<TextUnit>) -> BoxedStrategy<Vec<AtomEdit>> {
+        let ranges = (offsets.clone(), offsets.clone()).prop_map(|(x, y)| {
+            let (from, to) = if x < y { (x, y) } else { (y, x) };
+            TextRange::from_to(from, to)
         });
+        let deletes = ranges.clone().prop_map(AtomEdit::delete).boxed();
+        let inserts = (offsets.clone(), arb_text())
+            .prop_map(|(offset, text)| AtomEdit::insert(TextUnit::from(offset), text))
+            .boxed();
+        let replaces = (ranges, arb_text())
+            .prop_map(|(range, text)| AtomEdit::replace(range, text))
+            .boxed();
+
+        let arb_edit = deletes.prop_union(inserts).or(replaces);
         prop::collection::vec(arb_edit, 0..5).boxed()
     }
 
     proptest! {
         #[test]
-        fn test_translate_offset_with_edit(
-            (line_index, offset) in arb_line_index_with_offset(),
-            edits in arb_edits()
-        ) {
+        fn test_translate_offset_with_edit((line_index, offset, edits) in arb_line_index_with_offset_and_edits()) {
             let line_col = translate_offset_with_edit(&line_index, offset, &edits);
             println!("{:?}", line_col);
         }
