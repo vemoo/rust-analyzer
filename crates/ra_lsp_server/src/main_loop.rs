@@ -51,6 +51,41 @@ enum Task {
     Notify(RawNotification),
 }
 
+// what should this id be?
+const REGISTER_WATCHER_ID: u64 = 0;
+// this will be removed once ra_vfs supports watching files
+fn register_watcher(s: &Sender<RawMessage>) -> Result<()> {
+    use languageserver_types::{
+        notification::{self, Notification},
+        request, DidChangeWatchedFilesRegistrationOptions, FileSystemWatcher, Registration,
+        RegistrationParams,
+};
+
+    let reg_params = DidChangeWatchedFilesRegistrationOptions {
+        watchers: vec![FileSystemWatcher {
+            glob_pattern: "**/*.rs".into(),
+            kind: None,
+        }],
+    };
+
+    let reg_params = serde_json::value::to_value(reg_params)?;
+
+    let req = RawRequest::new::<request::RegisterCapability>(
+        REGISTER_WATCHER_ID,
+        &RegistrationParams {
+            registrations: vec![Registration {
+                id: "ra_lsp_watch".into(),
+                method: notification::DidChangeWatchedFiles::METHOD.into(),
+                register_options: Some(reg_params),
+            }],
+        },
+    );
+
+    s.send(RawMessage::Request(req))?;
+
+    Ok(())
+}
+
 pub fn main_loop(
     internal_mode: bool,
     ws_root: PathBuf,
@@ -76,6 +111,8 @@ pub fn main_loop(
         .shutdown()
         .map_err(|_| format_err!("ws watcher died"))?;
     let mut state = ServerWorldState::new(ws_root.clone(), workspaces);
+
+    register_watcher(msg_sender)?;
 
     log::info!("server initialized, serving requests");
 
@@ -219,7 +256,11 @@ fn main_loop_inner(
                     on_notification(msg_sender, state, pending_requests, subs, not)?;
                     state_changed = true;
                 }
-                RawMessage::Response(resp) => log::error!("unexpected response: {:?}", resp),
+                RawMessage::Response(resp) => {
+                    if resp.id != REGISTER_WATCHER_ID {
+                        log::error!("unexpected response: {:?}", resp)
+                    }
+                }
             },
         };
 
