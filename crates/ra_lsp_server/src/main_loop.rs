@@ -312,6 +312,57 @@ fn on_request(
     }
 }
 
+mod vfs_ops {
+    use super::*;
+    use parking_lot::RwLock;
+    use ra_vfs::Vfs;
+    use languageserver_types::Url;
+
+    pub fn add_file(
+        vfs: &RwLock<Vfs>,
+        subs: &mut Subscriptions,
+        uri: Url,
+        text: String,
+    ) -> Result<()> {
+        let path = uri
+            .to_file_path()
+            .map_err(|()| format_err!("invalid uri: {}", uri))?;
+        if let Some(file_id) = vfs.write().add_file_overlay(&path, text) {
+            subs.add_sub(FileId(file_id.0.into()));
+        }
+        Ok(())
+    }
+
+    pub fn change_file(vfs: &RwLock<Vfs>, uri: Url, text: String) -> Result<()> {
+        let path = uri
+            .to_file_path()
+            .map_err(|()| format_err!("invalid uri: {}", uri))?;
+        vfs.write().change_file_overlay(path.as_path(), text);
+        Ok(())
+    }
+
+    pub fn remove_file(
+        vfs: &RwLock<Vfs>,
+        subs: &mut Subscriptions,
+        msg_sender: &Sender<RawMessage>,
+        uri: Url,
+    ) -> Result<()> {
+        let path = uri
+            .to_file_path()
+            .map_err(|()| format_err!("invalid uri: {}", uri))?;
+        if let Some(file_id) = vfs.write().remove_file_overlay(path.as_path()) {
+            subs.remove_sub(FileId(file_id.0.into()));
+        }
+        let params = req::PublishDiagnosticsParams {
+            uri,
+            diagnostics: Vec::new(),
+        };
+        let not = RawNotification::new::<req::PublishDiagnostics>(&params);
+        msg_sender.send(RawMessage::Notification(not)).unwrap();
+        Ok(())
+    }
+}
+
 fn on_notification(
     msg_sender: &Sender<RawMessage>,
     state: &mut ServerWorldState,
@@ -341,52 +392,58 @@ fn on_notification(
     };
     let not = match not.cast::<req::DidOpenTextDocument>() {
         Ok(params) => {
-            let uri = params.text_document.uri;
-            let path = uri
-                .to_file_path()
-                .map_err(|()| format_err!("invalid uri: {}", uri))?;
-            if let Some(file_id) = state
-                .vfs
-                .write()
-                .add_file_overlay(&path, params.text_document.text)
-            {
-                subs.add_sub(FileId(file_id.0.into()));
-            }
+            vfs_ops::add_file(
+                &state.vfs,
+                subs,
+                params.text_document.uri,
+                params.text_document.text,
+            )?;
             return Ok(());
         }
         Err(not) => not,
     };
     let not = match not.cast::<req::DidChangeTextDocument>() {
         Ok(mut params) => {
-            let uri = params.text_document.uri;
-            let path = uri
-                .to_file_path()
-                .map_err(|()| format_err!("invalid uri: {}", uri))?;
             let text = params
                 .content_changes
                 .pop()
                 .ok_or_else(|| format_err!("empty changes"))?
                 .text;
-            state.vfs.write().change_file_overlay(path.as_path(), text);
+            vfs_ops::change_file(&state.vfs, params.text_document.uri, text)?;
             return Ok(());
         }
         Err(not) => not,
     };
     let not = match not.cast::<req::DidCloseTextDocument>() {
         Ok(params) => {
-            let uri = params.text_document.uri;
-            let path = uri
-                .to_file_path()
-                .map_err(|()| format_err!("invalid uri: {}", uri))?;
-            if let Some(file_id) = state.vfs.write().remove_file_overlay(path.as_path()) {
-                subs.remove_sub(FileId(file_id.0.into()));
+            vfs_ops::remove_file(&state.vfs, subs, msg_sender, params.text_document.uri)?;
+            return Ok(());
+        }
+        Err(not) => not,
+    };
+    // this will be removed once ra_vfs supports watching files
+    let not = match not.cast::<req::DidChangeWatchedFiles>() {
+        Ok(params) => {
+            use languageserver_types::FileChangeType::*;
+            for file_event in params.changes {
+                let path = file_event
+                    .uri
+                    .to_file_path()
+                    .map_err(|()| format_err!("invalid uri: {}", file_event.uri))?;
+                match file_event.typ {
+                    Created => {
+                        let text = std::fs::read_to_string(&path)?;
+                        vfs_ops::add_file(&state.vfs, subs, file_event.uri, text)?;
+                    }
+                    Changed => {
+                        let text = std::fs::read_to_string(&path)?;
+                        vfs_ops::change_file(&state.vfs, file_event.uri, text)?;
+                    }
+                    Deleted => {
+                        vfs_ops::remove_file(&state.vfs, subs, msg_sender, file_event.uri)?;
+                    }
+                }
             }
-            let params = req::PublishDiagnosticsParams {
-                uri,
-                diagnostics: Vec::new(),
-            };
-            let not = RawNotification::new::<req::PublishDiagnostics>(&params);
-            msg_sender.send(RawMessage::Notification(not)).unwrap();
             return Ok(());
         }
         Err(not) => not,
